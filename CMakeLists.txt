@@ -25,13 +25,7 @@ set(SRC ${PROJECT_SOURCE_DIR}/src/main.cpp
         ${PROJECT_SOURCE_DIR}/src/Object/Cube.cpp
         ${PROJECT_SOURCE_DIR}/src/Object/Sphere.cpp
         ${PROJECT_SOURCE_DIR}/src/Scene.cpp
-        ${PROJECT_SOURCE_DIR}/src/GUIRenderer.cpp
-        ${PROJECT_SOURCE_DIR}/src/WardrobeGenerator.cpp
-        ${PROJECT_SOURCE_DIR}/src/Object/WardrobeElements/WardrobeEdge.cpp
-        ${PROJECT_SOURCE_DIR}/src/Object/WardrobeElements/WardrobeHorizontalShelf.cpp
-        ${PROJECT_SOURCE_DIR}/src/Object/WardrobeElements/WardrobeVerticalElement.cpp
-        ${PROJECT_SOURCE_DIR}/src/Tools.cpp
-        ${PROJECT_SOURCE_DIR}/src/ArcBallCamera.cpp)
+        ${PROJECT_SOURCE_DIR}/src/GUIRenderer.cpp)
 
 add_executable(${CMAKE_PROJECT_NAME} ${SRC})
 

@@ -28,7 +28,7 @@ public:
 
     Sphere(glm::vec3 position, float radius) : IObject(position), radius(radius) {}
 
-    void update(float dt, bool col, float y);
+    void update(float dt, bool col, float y) override;
 };
 
 

@@ -11,7 +11,40 @@
 #include <tuple>
 #include "Texture.hpp"
 
-struct State;
+enum ObjectType
+{
+    BOX,
+    SPHERE,
+    AREALIGHT,
+};
+
+struct Material
+{
+    glm::vec3 emmitance;
+    glm::vec3 reflectance;
+    float roughness;
+    float opacity;
+    float metalness;
+    glm::vec3 color;
+};
+
+struct MaterialTextures
+{
+    Texture *albedo = nullptr;
+    Texture *normal = nullptr;
+    Texture *metallic = nullptr;
+    Texture *roughness = nullptr;
+    Texture *height = nullptr;
+    Texture *ao = nullptr;
+};
+
+struct Box
+{
+    Material material;
+    glm::vec3 halfSize;
+    glm::mat4 rotation;
+    glm::vec3 position;
+};
 
 struct VertexVectorStruct
 {
@@ -24,32 +57,25 @@ public:
 class IObject
 {
 public:
-    IObject(glm::vec3 position) : position(position), startPosition(position), model(glm::mat4(1.0f)), picked(false), moveAxis({0, 0, 0}) {};
+    IObject(glm::vec3 position) : position(position), startPosition(position), model(glm::mat4(1.0f)) {};
     glm::vec3 position;
     glm::vec3 startPosition;
     glm::mat4 model;
-    bool picked;
-    bool enabled = true;
-    glm::vec3 moveAxis;
-    struct plane_t
-    {
-        glm::vec3 origin;
-        glm::vec3 normal;
-    } movement_plane;
     Texture *texture;
+    Material material;
+    MaterialTextures materialTextures{};
+    glm::vec3 size;
+    glm::vec3 center;
     int texScaleX = 1;
     int texScaleY = 1;
     VertexVectorStruct objectData;
-
     GLuint VAO{};
 
     virtual void generateVAO() {};
-    virtual void update(State *state, size_t currentId) {};
+    virtual void update(float dt) {};
+    virtual void update(float dt, bool col, float y) {}
     virtual void applyTranslations() {};
     virtual void draw() {};
-
-    virtual void start_move(State *state) {};
-    virtual void end_move() {};
 
     bool physicsEnabled = false;
     bool collisionEnabled = false;

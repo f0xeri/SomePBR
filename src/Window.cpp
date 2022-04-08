@@ -2,13 +2,16 @@
 // Created by Yaroslav on 30.10.2020.
 //
 
+#define TINYGLTF_IMPLEMENTATION
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "../thirdparty/tiny_gltf.h"
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include <tuple>
 #include <glm/ext.hpp>
 #include <sstream>
 #include <GUIRenderer.hpp>
-#include <WardrobeGenerator.hpp>
 #include "Window.h"
 #include "Logger.hpp"
 #include "ObjectLoader.h"
@@ -19,18 +22,13 @@
 #include "Object/Cube.hpp"
 #include "Object/Sphere.hpp"
 #include "Scene.hpp"
-#include "Tools.hpp"
-
-
-#include <Object/WardrobeElements/WardrobeVerticalElement.hpp>
-#include <Object/WardrobeElements/WardrobeHorizontalShelf.hpp>
-
 
 State *state;
 Controls *controls;
 
 unsigned int nbFrames = 0;
 double lastTime;
+double dx, dy;
 
 float skyboxVertices[] = {
         -1.0f,  1.0f, -1.0f,
@@ -85,7 +83,7 @@ void showFPS(GLFWwindow *pWindow)
     {
         double fps = double(nbFrames) / delta;
         std::stringstream ss;
-        ss << "WardrobeDesigner " << " [" << fps << " FPS]";
+        ss << "FoxEngine " << " [" << fps << " FPS]";
         glfwSetWindowTitle(pWindow, ss.str().c_str());
         nbFrames = 0;
         lastTime = currentTime;
@@ -129,7 +127,6 @@ Window::Window(const char *title, int width, int height)
     Window::_height = height;
 
     state = new State();
-    state->camera = new Camera({-20, 20, 0}, 60.0f);
     state->window = mainWindow;
     glfwSwapInterval(state->vsync);
     controls = new Controls(state);
@@ -138,7 +135,6 @@ Window::Window(const char *title, int width, int height)
     glfwSetCursorPosCallback(mainWindow, cursorCallback);
     glfwSetKeyCallback(mainWindow, keyCallback);
     glfwSetMouseButtonCallback(mainWindow, mouseButtonCallback);
-    glfwSetScrollCallback(mainWindow, scrollCallback);
     toggleCursor(mainWindow);
 }
 
@@ -198,19 +194,124 @@ GLuint genSkyboxVAO()
     return skyboxVAO;
 }
 
-void renderScene(Shader &shader, Scene *scene)
+inline float squared(float v) { return v * v; }
+bool doesCubeIntersectSphere(Cube *cube, Sphere *sphere)
+{
+    if (!cube->collisionEnabled || !sphere->collisionEnabled) return false;
+
+    float dist_squared = sphere->radius * sphere->radius;
+    if (sphere->position.x < cube->Bmin.x) dist_squared -= squared(sphere->position.x - cube->Bmin.x);
+    else if (sphere->position.x > cube->Bmax.x) dist_squared -= squared(sphere->position.x - cube->Bmax.x);
+    if (sphere->position.y < cube->Bmin.y) dist_squared -= squared(sphere->position.y - cube->Bmin.y);
+    else if (sphere->position.y > cube->Bmax.y) dist_squared -= squared(sphere->position.y - cube->Bmax.y);
+    if (sphere->position.z < cube->Bmin.z) dist_squared -= squared(sphere->position.z - cube->Bmin.z);
+    else if (sphere->position.z > cube->Bmax.z) dist_squared -= squared(sphere->position.z - cube->Bmax.z);
+    return dist_squared > 0;
+}
+
+void renderDemoScene(Shader &shader, Cube *cube, Cube *cube2, Sphere *sphere)
 {
     glActiveTexture(GL_TEXTURE0);
+    cube->texture->bind();
+    glm::mat4 model = glm::mat4(1.0f);
+    shader.uniformMatrix(model, "model");
+    if (state->pickedObject == 0)
+        shader.setInt(1, "isPicked");
+    else
+        shader.setInt(0, "isPicked");
+    cube->draw();
 
+    glActiveTexture(GL_TEXTURE0);
+    cube2->texture->bind();
+    model = glm::mat4(1.0f);
+    shader.uniformMatrix(model, "model");
+    if (state->pickedObject == 1)
+        shader.setInt(1, "isPicked");
+    else
+        shader.setInt(0, "isPicked");
+    cube2->draw();
+
+    if (doesCubeIntersectSphere(cube, sphere))
+    {
+        sphere->update(state->deltaTime, true, cube->position.y);
+    }
+
+    if (doesCubeIntersectSphere(cube2, sphere))
+    {
+        sphere->update(state->deltaTime, true, cube2->position.y);
+    }
+    else
+    {
+        sphere->update(state->deltaTime, false, 0.0);
+    }
+
+    vec3 sphereTranslate = sphere->position - sphere->startPosition;
+    model = glm::mat4(1.0f);
+    model = glm::translate(model, sphereTranslate);
+    shader.uniformMatrix(model, "model");
+    if (state->pickedObject == 2)
+    {
+        // с этим условием получаются рывки, если пытаться сделать норм скорость
+        // без - объект продолжает двигаться даже если не двигать мышкой, ибо сохраняется последние данные deltaX и deltaY
+        if (state->x - dx != 0 || state->y - dy != 0)
+        {
+            sphere->position.x += state->deltaX * state->deltaTime;
+            sphere->position.z += state->deltaY * state->deltaTime;
+
+            sphereTranslate = sphere->position - sphere->startPosition;
+            model = glm::mat4(1.0f);
+            model = glm::translate(model, sphereTranslate);
+            shader.uniformMatrix(model, "model");
+        }
+        shader.setInt(1, "isPicked");
+    }
+    else
+        shader.setInt(0, "isPicked");
+    sphere->draw();
+}
+
+void renderScene(Shader &shader, Scene *scene)
+{
     for (size_t i = 0; i < scene->objects.size(); i++)
     {
-        scene->objects[i]->update(state, i);
+        scene->objects[i]->update(state->deltaTime, false, 0.0);
         shader.uniformMatrix(scene->objects[i]->model, "model");
         if (state->pickedObject == i)
             shader.setInt(1, "isPicked");
         else
             shader.setInt(0, "isPicked");
-        scene->objects[i]->texture->bind();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, scene->objects[i]->materialTextures.albedo->texture);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, scene->objects[i]->materialTextures.normal->texture);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, scene->objects[i]->materialTextures.metallic->texture);
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, scene->objects[i]->materialTextures.roughness->texture);
+        glActiveTexture(GL_TEXTURE4);
+        if (scene->objects[i]->materialTextures.height != nullptr) glBindTexture(GL_TEXTURE_2D, scene->objects[i]->materialTextures.height->texture);
+        glActiveTexture(GL_TEXTURE5);
+        if (scene->objects[i]->materialTextures.ao != nullptr) glBindTexture(GL_TEXTURE_2D, scene->objects[i]->materialTextures.ao->texture);
+        glActiveTexture(GL_TEXTURE0);
+        /*glUniform1f(glGetUniformLocation(shader.mProgram, "roughness"), scene->objects[i]->material.roughness);
+        glUniform1f(glGetUniformLocation(shader.mProgram, "metalness"), scene->objects[i]->material.metalness);*/
+        glUniform3f(glGetUniformLocation(shader.mProgram, "emmisivity"), scene->objects[i]->material.emmitance.x, scene->objects[i]->material.emmitance.y, scene->objects[i]->material.emmitance.z);
+        scene->objects[i]->draw();
+    }
+}
+
+void renderSceneId(Shader &shader, Scene *scene)
+{
+    for (int i = 0; i < scene->objects.size(); i++)
+    {
+        /*vec3 objPosTranslate = scene->objects[i]->position - scene->objects[i]->startPosition;
+        glm::mat4 model = glm::mat4(1.0f);
+        model = glm::translate(model, objPosTranslate);*/
+        shader.uniformMatrix(scene->objects[i]->model, "model");
+        int r = (i & 0x000000FF) >>  0;
+        int g = (i & 0x0000FF00) >>  8;
+        int b = (i & 0x00FF0000) >> 16;
+        glUniform4f(glGetUniformLocation(shader.mProgram, "color"), r / 255.0f, g / 255.0f, b / 255.0f, 1.0f);
         scene->objects[i]->draw();
     }
 }
@@ -244,11 +345,24 @@ void renderQuad()
     glBindVertexArray(0);
 }
 
+long double operator "" _mm(long double mm)
+{
+    return mm / 320.0f;
+}
+
+long double operator "" _mm(unsigned long long mm)
+{
+    return mm / 320.0f;
+}
+
+
 void Window::startLoop()
 {
     glEnable(GL_DEPTH_TEST);
-
+    ObjectLoader loader;
     GUIRenderer gui(mainWindow);
+
+    Texture *texture = new Texture("res/textures/cube.jpg");
 
     Texture *floorTexture = new Texture("res/textures/floor.jpg");
     floorTexture->loadTexture();
@@ -267,40 +381,211 @@ void Window::startLoop()
                     "res/textures/back.jpg"
             };
 
-    state->wardrobeTextures.insert(std::make_pair(floorTexture->name, floorTexture));
-    state->wardrobeTextures.insert(std::make_pair(woodTexture->name, woodTexture));
+    Texture *rustedIron2Albedo = new Texture("res/textures/rustediron2/rustediron2_basecolor.png");
+    rustedIron2Albedo->loadTexture();
+    Texture *rustedIron2Normal = new Texture("res/textures/rustediron2/rustediron2_normal.png");
+    rustedIron2Normal->loadTexture();
+    Texture *rustedIron2Metallic = new Texture("res/textures/rustediron2/rustediron2_metallic.png");
+    rustedIron2Metallic->loadTexture();
+    Texture *rustedIron2Roughness = new Texture("res/textures/rustediron2/rustediron2_roughness.png");
+    rustedIron2Roughness->loadTexture();
 
-    Cube *floor = new Cube({-10, -1, -10}, {20, 1, 20});
-    floor->texture = floorTexture;
-    floor->texScaleX = floor->texScaleY = 8;
-    floor->generateVAO();
+    Texture *goldAlbedo = new Texture("res/textures/gold/albedo.png");
+    goldAlbedo->loadTexture();
+    Texture *goldNormal = new Texture("res/textures/gold/normal.png");
+    goldNormal->loadTexture();
+    Texture *goldMetallic = new Texture("res/textures/gold/metallic.png");
+    goldMetallic->loadTexture();
+    Texture *goldRoughness = new Texture("res/textures/gold/roughness.png");
+    goldRoughness->loadTexture();
 
-    state->wardrobeGenerator = new WardrobeGenerator({0, 0, 0}, 1500_mm, 2400_mm, 600_mm, 16_mm, 132_mm, woodTexture);
-    
-    state->cm = ClusterManager(
-        glm::ivec3( from_mm(state->wardrobeGenerator->width) - from_mm(state->wardrobeGenerator->boardThickness) * 2,
-                    from_mm(state->wardrobeGenerator->height) - from_mm(state->wardrobeGenerator->baseHeight) - from_mm(state->wardrobeGenerator->boardThickness),
-                    from_mm(state->wardrobeGenerator->depth)),
-        state->wardrobeGenerator->origin);
+    /*Texture *rockAlbedo = new Texture("res/textures/rock/eroded-smoothed-rockface_albedo.png");
+    rockAlbedo->loadTexture();
+    Texture *rockNormal = new Texture("res/textures/rock/eroded-smoothed-rockface_normal-ogl.png");
+    rockNormal->loadTexture();
+    Texture *rockMetallic = new Texture("res/textures/rock/eroded-smoothed-rockface_metallic.png");
+    rockMetallic->loadTexture();
+    Texture *rockRoughness = new Texture("res/textures/rock/eroded-smoothed-rockface_roughness.png");
+    rockRoughness->loadTexture();
+    Texture *rockHeight = new Texture("res/textures/rock/eroded-smoothed-rockface_height.png");
+    rockHeight->loadTexture();
+    Texture *rockAO = new Texture("res/textures/rock/eroded-smoothed-rockface_ao.png");
+    rockAO->loadTexture();*/
 
-    vec3 lightPos(15.0f, 25.0f, -20.0f);
+    Texture *graniteAlbedo = new Texture("res/textures/granite/gray-granite-flecks-albedo.png");
+    graniteAlbedo->loadTexture();
+    Texture *graniteNormal = new Texture("res/textures/granite/gray-granite-flecks-Normal-ogl.png");
+    graniteNormal->loadTexture();
+    Texture *graniteMetallic = new Texture("res/textures/granite/gray-granite-flecks-Metallic.png");
+    graniteMetallic->loadTexture();
+    Texture *graniteRoughness = new Texture("res/textures/granite/gray-granite-flecks-Roughness.png");
+    graniteRoughness->loadTexture();
+    Texture *graniteAO = new Texture("res/textures/granite/gray-granite-flecks-ao.png");
+    graniteAO->loadTexture();
 
-    auto skybox = genSkyboxVAO();
+    Texture *rubberAlbedo = new Texture("res/textures/rubber/synth-rubber-albedo.png");
+    rubberAlbedo->loadTexture();
+    Texture *rubberNormal = new Texture("res/textures/rubber/synth-rubber-normal.png");
+    rubberNormal->loadTexture();
+    Texture *rubberMetallic = new Texture("res/textures/rubber/synth-rubber-metalness.png");
+    rubberMetallic->loadTexture();
+    Texture *rubberRoughness = new Texture("res/textures/rubber/synth-rubber-roughness.png");
+    rubberRoughness->loadTexture();
+
+    Texture *iceFieldAlbedo = new Texture("res/textures/iceField/ice_field_albedo.png");
+    iceFieldAlbedo->loadTexture();
+    Texture *iceFieldNormal = new Texture("res/textures/iceField/ice_field_normal-ogl.png");
+    iceFieldNormal->loadTexture();
+    Texture *iceFieldMetallic = new Texture("res/textures/iceField/ice_field_metallic.png");
+    iceFieldMetallic->loadTexture();
+    Texture *iceFieldRoughness = new Texture("res/textures/iceField/ice_field_roughness.png");
+    iceFieldRoughness->loadTexture();
+    Texture *iceFieldHeight = new Texture("res/textures/iceField/ice_field_height.png");
+    iceFieldHeight->loadTexture();
+    Texture *iceFieldAO = new Texture("res/textures/iceField/ice_field_ao.png");
+    iceFieldAO->loadTexture();
+
+    Texture *hdrMap = new Texture("res/textures/felsenlabyrinth_1k.hdr");
+    hdrMap->loadHDRmap();
+
 
     Scene *scene = new Scene();
+    /*for (int i = 0; i < 7; i++)
+    {
+        for (int j = 0; j < 7; j++)
+        {
+            glm::vec3 startPos{(j - (7 / 2)) * 2.5, (i - (7 / 2)) * 2.5, 10};
+            Sphere *sphere = new Sphere(startPos, 1.0f);
+            sphere->physicsEnabled = false;
+            sphere->collisionEnabled = false;
+            sphere->texture = rustedIron2Albedo;
+            sphere->material.roughness = glm::clamp((float)j / 7.0f, 0.05f, 1.0f);
+            sphere->material.metalness = (float)i / 7.0f;
+            sphere->material.opacity = 0.0;
+            sphere->material.emmitance = vec3(0.0);
+            sphere->material.reflectance = vec3(1.0, 1.0, 1.0);
+            sphere->material.color = vec3(1, 1, 1);
 
-    scene->addObject(floor);
-    scene->addObject(state->wardrobeGenerator->bottomSide);
-    scene->addObject(state->wardrobeGenerator->backSide);
-    scene->addObject(state->wardrobeGenerator->topSide);
-    scene->addObject(state->wardrobeGenerator->leftSide);
-    scene->addObject(state->wardrobeGenerator->rightSide);
+            sphere->materialTextures.albedo = rustedIron2Albedo;
+            sphere->materialTextures.normal = rustedIron2Normal;
+            sphere->materialTextures.metallic = rustedIron2Metallic;
+            sphere->materialTextures.roughness = rustedIron2Roughness;
+
+            sphere->model = mat4(1.0f);
+            sphere->model = glm::translate(sphere->model, sphere->position);
+            sphere->model = glm::rotate(sphere->model, glm::radians(90.0f), {1, 0, 0});
+            sphere->model = glm::translate(sphere->model, -sphere->position);
+            sphere->generateVAO();
+            scene->addObject(sphere);
+        }
+    }*/
+
+    glm::vec3 startPos1{0, 0, 0};
+    Sphere *sphere1 = new Sphere(startPos1, 1.0f);
+    sphere1->physicsEnabled = false;
+    sphere1->collisionEnabled = false;
+
+    sphere1->material.roughness = glm::clamp((float)1 / 7.0f, 0.05f, 1.0f);
+    sphere1->material.metalness = (float)1 / 7.0f;
+    sphere1->material.opacity = 0.0;
+    sphere1->material.emmitance = vec3(0.0);
+    sphere1->material.reflectance = vec3(1.0, 1.0, 1.0);
+    sphere1->material.color = vec3(1, 1, 1);
+
+    sphere1->materialTextures.albedo = rustedIron2Albedo;
+    sphere1->materialTextures.normal = rustedIron2Normal;
+    sphere1->materialTextures.metallic = rustedIron2Metallic;
+    sphere1->materialTextures.roughness = rustedIron2Roughness;
+    sphere1->model = mat4(1.0f);
+    sphere1->model = glm::translate(sphere1->model, sphere1->position);
+    sphere1->model = glm::rotate(sphere1->model, glm::radians(90.0f), {1, 0, 0});
+    sphere1->model = glm::translate(sphere1->model, -sphere1->position);
+    sphere1->generateVAO();
+    scene->addObject(sphere1);
+
+    glm::vec3 startPos2{2, 0, 0};
+    Sphere *sphere2 = new Sphere(startPos2, 1.0f);
+    sphere2->physicsEnabled = false;
+    sphere2->collisionEnabled = false;
+
+    sphere2->material.roughness = glm::clamp((float)2 / 7.0f, 0.05f, 1.0f);
+    sphere2->material.metalness = (float)2 / 7.0f;
+    sphere2->material.opacity = 0.0;
+    sphere2->material.emmitance = vec3(0.0);
+    sphere2->material.reflectance = vec3(1.0, 1.0, 1.0);
+    sphere2->material.color = vec3(1, 1, 1);
+
+    sphere2->materialTextures.albedo = graniteAlbedo;
+    sphere2->materialTextures.normal = graniteNormal;
+    sphere2->materialTextures.metallic = graniteMetallic;
+    sphere2->materialTextures.roughness = graniteRoughness;
+    sphere2->materialTextures.ao = graniteAO;
+    sphere2->model = mat4(1.0f);
+    sphere2->model = glm::translate(sphere2->model, sphere2->position);
+    sphere2->model = glm::rotate(sphere2->model, glm::radians(90.0f), {1, 0, 0});
+    sphere2->model = glm::translate(sphere2->model, -sphere2->position);
+    sphere2->generateVAO();
+    scene->addObject(sphere2);
+
+    glm::vec3 startPos3{4, 0, 0};
+    Sphere *sphere3 = new Sphere(startPos3, 1.0f);
+    sphere3->physicsEnabled = false;
+    sphere3->collisionEnabled = false;
+
+    sphere3->material.roughness = glm::clamp((float)2 / 7.0f, 0.05f, 1.0f);
+    sphere3->material.metalness = (float)2 / 7.0f;
+    sphere3->material.opacity = 0.0;
+    sphere3->material.emmitance = vec3(0.0);
+    sphere3->material.reflectance = vec3(1.0, 1.0, 1.0);
+    sphere3->material.color = vec3(1, 1, 1);
+
+    sphere3->materialTextures.albedo = rubberAlbedo;
+    sphere3->materialTextures.normal = rubberNormal;
+    sphere3->materialTextures.metallic = rubberMetallic;
+    sphere3->materialTextures.roughness = rubberRoughness;
+    sphere3->model = mat4(1.0f);
+    sphere3->model = glm::translate(sphere3->model, sphere2->position);
+    sphere3->model = glm::rotate(sphere3->model, glm::radians(90.0f), {1, 0, 0});
+    sphere3->model = glm::translate(sphere3->model, -sphere2->position);
+    sphere3->generateVAO();
+    scene->addObject(sphere3);
+
+    glm::vec3 startPos4{6, 0, 0};
+    Sphere *sphere4 = new Sphere(startPos4, 1.0f);
+    sphere4->physicsEnabled = false;
+    sphere4->collisionEnabled = false;
+
+    sphere4->material.roughness = glm::clamp((float)2 / 7.0f, 0.05f, 1.0f);
+    sphere4->material.metalness = (float)2 / 7.0f;
+    sphere4->material.opacity = 0.0;
+    sphere4->material.emmitance = vec3(0.0);
+    sphere4->material.reflectance = vec3(1.0, 1.0, 1.0);
+    sphere4->material.color = vec3(1, 1, 1);
+
+    sphere4->materialTextures.albedo = iceFieldAlbedo;
+    sphere4->materialTextures.normal = iceFieldNormal;
+    sphere4->materialTextures.metallic = iceFieldMetallic;
+    sphere4->materialTextures.roughness = iceFieldRoughness;
+    sphere4->materialTextures.height = iceFieldHeight;
+    sphere4->materialTextures.ao = iceFieldAO;
+    sphere4->model = mat4(1.0f);
+    sphere4->model = glm::translate(sphere4->model, sphere2->position);
+    sphere4->model = glm::rotate(sphere4->model, glm::radians(90.0f), {1, 0, 0});
+    sphere4->model = glm::translate(sphere4->model, -sphere2->position);
+    sphere4->generateVAO();
+    scene->addObject(sphere4);
+
+    vec3 lightPos(10, 30, -10);
+
+    auto skybox = genSkyboxVAO();
     state->scene = scene;
 
     glEnable(GL_DEPTH_TEST);
-    state->camera = new Camera(glm::vec3(-20.0f, 15.0f, -20.0f), radians(60.0f));
+    state->camera = new Camera(glm::vec3(0, 0, 0), radians(60.0f));
+    state->camera->front = {0, 0, 1};
 
     unsigned int cubemapTexture = skyboxTexture->loadCubemap(faces);
+    texture->loadTexture();
 
     const unsigned int SHADOW_WIDTH = 2048, SHADOW_HEIGHT = 2048;
     unsigned int depthMapFBO;
@@ -323,6 +608,37 @@ void Window::startLoop()
     glReadBuffer(GL_NONE);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
+    //unsigned int idBuffer;
+    glGenFramebuffers(1, &state->idBuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, state->idBuffer);
+    unsigned int idColor;
+    glGenTextures(1, &idColor);
+    glBindTexture(GL_TEXTURE_2D, idColor);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, Window::_width, Window::_height, 0, GL_RGBA, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, idColor, 0);
+    unsigned int attachments[1] = { GL_COLOR_ATTACHMENT0 };
+    glDrawBuffers(1, attachments);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        std::cout << "Framebuffer not complete!" << std::endl;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    unsigned int resBuffer;
+    glGenFramebuffers(1, &resBuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, resBuffer);
+    unsigned int resBufferColor;
+    glGenTextures(1, &resBufferColor);
+    glBindTexture(GL_TEXTURE_2D, resBufferColor);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, Window::_width, Window::_height, 0, GL_RGBA, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, resBufferColor, 0);
+    unsigned int attachments2[1] = { GL_COLOR_ATTACHMENT0 };
+    glDrawBuffers(1, attachments2);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        std::cout << "Framebuffer not complete!" << std::endl;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     Shader shader("vert", "frag");
     shader.link();
@@ -339,22 +655,69 @@ void Window::startLoop()
     Shader debugQuad("vertDebugQuad", "fragDebugQuad");
     debugQuad.setInt(0, "depthMap");
     debugQuad.link();
-
-    glm::vec3 eye(10, 10, 10);
-    glm::vec3 center(0);
-    glm::vec3 up(0, 1, 0);
-    state->arcBallCamera = new ArcBallCamera(eye, center, up, radians(60.0f));
+    vec3 oldLightPos = lightPos;
     double lastTime = glfwGetTime();
+    state->camera->front = {0, 0, 1};
 
+    glm::vec3 startPos{lightPos};
+    Sphere *sphere = new Sphere(startPos, 1.0f);
+    sphere->physicsEnabled = false;
+    sphere->collisionEnabled = false;
+    sphere->texture = texture;
+    sphere->material.roughness = 0.01;
+    sphere->material.metalness = 1.0;
+    sphere->material.opacity = 0.0;
+    sphere->material.emmitance = vec3(1.0);
+    sphere->material.reflectance = vec3(1.0, 1.0, 1.0);
+    sphere->material.color = vec3(1, 1, 1);
+
+    sphere->materialTextures.albedo = goldAlbedo;
+    sphere->materialTextures.normal = goldNormal;
+    sphere->materialTextures.metallic = goldMetallic;
+    sphere->materialTextures.roughness = goldRoughness;
+    sphere->generateVAO();
+    scene->addObject(sphere);
+
+    //~~~~~~~~~~~~~~~~~~~~~
+    tinygltf::Model model;
+    tinygltf::TinyGLTF gltfLoader;
+    std::string err;
+    std::string warn;
+
+    /*bool ret = gltfLoader.LoadASCIIFromFile(&model, &err, &warn, "res/sponza-gltf/sponza.gltf");
+    if (!warn.empty()) {
+        printf("Warn: %s\n", warn.c_str());
+    }
+
+    if (!err.empty()) {
+        printf("Err: %s\n", err.c_str());
+    }
+
+    if (!ret) {
+        printf("Failed to parse glTF\n");
+    }
+    */
+    //~~~~~~~~~~~~~~~~~~~~~
     while (!glfwWindowShouldClose(mainWindow))
     {
         showFPS(mainWindow);
         double currentTime = glfwGetTime();
         state->deltaTime = glfwGetTime() - lastTime;
         lastTime = currentTime;
-        glfwGetCursorPos(mainWindow, &state->dx, &state->dy);
+        glfwGetCursorPos(mainWindow, &dx, &dy);
+        //state->deltaX = state->deltaY = 0;
+        updateInputs(mainWindow);
 
-        //updateInputs(mainWindow);
+        oldLightPos = lightPos;
+        float rad = glm::radians(90.0f);
+        lightPos.z = (oldLightPos.z * glm::cos(rad * state->deltaTime) - oldLightPos.y * glm::sin(rad * state->deltaTime));
+        lightPos.y = (oldLightPos.z * glm::sin(rad * state->deltaTime) + oldLightPos.y * glm::cos(rad * state->deltaTime));
+        sphere->position = lightPos;
+        sphere->applyTranslations();
+        glm::vec3 sphereTranslate = sphere->position - sphere->startPosition;
+        sphere->model = glm::mat4(1.0f);
+        sphere->model = glm::translate(sphere->model, sphereTranslate);
+
 
         glm::mat4 lightProjection, lightView;
         glm::mat4 lightSpaceMatrix;
@@ -368,9 +731,26 @@ void Window::startLoop()
 
         glViewport(0, 0,  SHADOW_WIDTH, SHADOW_HEIGHT);
         glBindFramebuffer(GL_FRAMEBUFFER, depthMapFBO);
-        glClear(GL_DEPTH_BUFFER_BIT);
-        glActiveTexture(GL_TEXTURE0);
+            glClear(GL_DEPTH_BUFFER_BIT);
+            glActiveTexture(GL_TEXTURE0);
+            texture->bind();
         renderScene(simpleDepthShader, scene);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        // color id
+        glBindFramebuffer(GL_FRAMEBUFFER, state->idBuffer);
+        glViewport(0, 0, Window::_width, Window::_height);
+        glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        colorIdShader.use();
+        colorIdShader.uniformMatrix(state->camera->getProjectionMatrix() * state->camera->getViewMatrix(), "projView");
+        renderSceneId(colorIdShader, scene);
+        //glFlush();
+        //glFinish();
+        //glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+        //glReadBuffer(GL_COLOR_ATTACHMENT0);
 
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         // reset viewport
@@ -379,25 +759,36 @@ void Window::startLoop()
         if (state->showPolygons) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
         else glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         shader.use();
-        shader.uniformMatrix(state->arcBallCamera->getProjectionMatrix() * state->arcBallCamera->getViewMatrix(), "projView");
-        glUniform3f(glGetUniformLocation(shader.mProgram, "viewPos"), state->arcBallCamera->pos.x, state->arcBallCamera->pos.y, state->arcBallCamera->pos.z);
+        shader.uniformMatrix(state->camera->getProjectionMatrix() * state->camera->getViewMatrix(), "projView");
+        glUniform3f(glGetUniformLocation(shader.mProgram, "viewPos"), state->camera->pos.x, state->camera->pos.y, state->camera->pos.z);
         glUniform3f(glGetUniformLocation(shader.mProgram, "lightPos"), lightPos.x, lightPos.y, lightPos.z);
         shader.uniformMatrix(lightSpaceMatrix, "lightSpaceMatrix");
-        glActiveTexture(GL_TEXTURE2);
+
+        glUniform1i(glGetUniformLocation(shader.mProgram, "uSamples"), 8);
+        glUniform1i(glGetUniformLocation(shader.mProgram, "uTime"), glfwGetTime());
+        glUniform2f(glGetUniformLocation(shader.mProgram, "uViewportSize"), Window::_width, Window::_height);
+        glUniform3f(glGetUniformLocation(shader.mProgram, "uPosition"), state->camera->pos.x, state->camera->pos.y, state->camera->pos.z);
+        glUniform3f(glGetUniformLocation(shader.mProgram, "uDirection"), state->camera->front.x, state->camera->front.y, state->camera->front.z);
+        glUniform3f(glGetUniformLocation(shader.mProgram, "uUp"), state->camera->up.x, state->camera->up.y, state->camera->up.z);
+        glUniform1f(glGetUniformLocation(shader.mProgram, "uFOV"), state->camera->FOV);
+
+        glActiveTexture(GL_TEXTURE6);
         glBindTexture(GL_TEXTURE_2D, depthMap);
+        glActiveTexture(GL_TEXTURE7);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);
         renderScene(shader, scene);
 
-        /*debugQuad.use();
+        debugQuad.use();
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, idColor);
-        renderQuad();*/
+        glBindTexture(GL_TEXTURE_2D, depthMap);
+        //renderQuad();
 
         glDepthFunc(GL_LEQUAL);
         skyboxShader.use();
         skyboxTexture->bind();
         glm::mat4 model2 = glm::mat4(1.f);
         skyboxShader.uniformMatrix(model2, "view");
-        skyboxShader.uniformMatrix(state->arcBallCamera->getProjectionMatrix() * glm::mat4(glm::mat3(state->arcBallCamera->getViewMatrix())), "projection");
+        skyboxShader.uniformMatrix(state->camera->getProjectionMatrix() * glm::mat4(glm::mat3(state->camera->getViewMatrix())), "projection");
         glBindVertexArray(skybox);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_CUBE_MAP, cubemapTexture);

@@ -9,31 +9,14 @@
 
 class Cube : public IObject {
 public:
-    Cube(glm::vec3 position, glm::vec3 size) : IObject(position), size(size), startSize(size) {};
-    glm::vec3 size;
-    glm::vec3 startSize;
+    Cube(glm::vec3 position, glm::vec3 size) : IObject(position) {this->size = size;};
 
-    glm::vec3 Bmax, Bmin;
-    struct plane_t
-    {
-        glm::vec3 origin;
-        glm::vec3 normal;
-    } movement_plane;
-    glm::vec3 origin_offset;
-
-    glm::vec3 constraint_min;
-    glm::vec3 constraint_max;
-    
-
-    void start_move(State *state);
-    void end_move();
+    glm::vec3 Bmin, Bmax;
 
     void generateVAO() override;
     void applyTranslations() override;
-    void update(State *state, size_t currentId) override;
+    void update(float dt) override;
     void draw() override;
-
-    bool intersect(const glm::vec3 &rayPos, const glm::vec3 &rayDir, float &t) const;
 };
 
 
